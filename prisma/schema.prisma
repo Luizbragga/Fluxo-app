@@ -24,6 +24,13 @@ enum Specialty {
   other
 }
 
+enum AppointmentStatus {
+  scheduled
+  confirmed
+  canceled
+  done
+}
+
 model Tenant {
   id           String        @id @default(cuid())
   name         String
@@ -49,8 +56,9 @@ model User {
   createdAt    DateTime  @default(now())
 
   // refresh tokens serão guardados na tabela RefreshToken
-  tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  tokens RefreshToken[]
+  tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tokens       RefreshToken[]
+  appointments Appointment[]
 
   @@unique([tenantId, email]) // email único dentro do tenant
   @@index([tenantId])
@@ -125,24 +133,25 @@ model Block {
 }
 
 model Appointment {
-  id         String   @id @default(cuid())
-  tenantId   String
-  providerId String
-  userId     String? // opcional: cliente logado (se existir)
-  date       DateTime // data do dia (00:00Z) — facilita buscas por dia
-  startAt    DateTime // início em ISO
-  endAt      DateTime // fim em ISO
-  serviceId  String? // opcional: qual serviço foi escolhido
-  note       String? // observação do agendamento
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id          String   @id @default(cuid())
+  tenantId    String
+  providerId  String
+  serviceId   String
+  startAt     DateTime
+  endAt       DateTime
+  clientName  String
+  clientPhone String
 
-  // Relacionamentos
+  createdById String?
+  createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
   tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
-  service  Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  service  Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
 
-  @@index([tenantId, providerId, date])
-  @@index([tenantId, startAt])
-  @@index([tenantId, endAt])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, providerId, startAt, endAt])
 }
