@@ -9,24 +9,28 @@ import {
   Query,
   Req,
   UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-
+import {
+  ApiBearerAuth,
+  ApiTags,
+  ApiQuery,
+  ApiBody,
+  getSchemaPath,
+} from '@nestjs/swagger';
 import { AppointmentsService } from './appointments.service';
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
-import { UpdateAppointmentDto } from './dto/update-appointment.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
-
-class DayQueryDto {
-  date!: string;
-} // simples: já mandamos ISO em query
+import { ListAppointmentsDayQueryDto } from './dto/list-day.query.dto';
+import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto';
+import { UpdateAppointmentStatusDto } from './dto/update-status.dto';
 
 @ApiTags('Appointments')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Controller('/v1/appointments')
+@Controller('appointments')
 export class AppointmentsController {
   constructor(private readonly appointmentsService: AppointmentsService) {}
 
@@ -39,16 +43,71 @@ export class AppointmentsController {
   }
 
   @Roles('owner', 'admin', 'attendant', 'provider')
-  @Get(':providerId/day')
-  listDay(
-    @Req() req: any,
-    @Param('providerId') providerId: string,
-    @Query() query: DayQueryDto,
-  ) {
-    return this.appointmentsService.findDay(
-      req.user?.tenantId,
-      providerId,
+  @Get()
+  @ApiQuery({
+    name: 'date',
+    required: true,
+    type: String,
+    example: '2025-11-17',
+    description: 'Data no formato YYYY-MM-DD (UTC)',
+  })
+  @ApiQuery({
+    name: 'providerId',
+    required: false,
+    type: String,
+    example: 'cxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+    description: 'Opcional: filtra por provider',
+  })
+  listDayQuery(@Req() req: any, @Query() query: ListAppointmentsDayQueryDto) {
+    const tenantId = req.user?.tenantId as string;
+    return this.appointmentsService.findByDay(
+      tenantId,
       query.date,
+      query.providerId,
+    );
+  }
+
+  @Roles('owner', 'admin', 'attendant', 'provider')
+  @Patch(':id')
+  @ApiBody({
+    description:
+      'Envie { status } para mudar status OU { startAt, endAt } para reagendar.',
+    schema: {
+      oneOf: [
+        { $ref: getSchemaPath(UpdateAppointmentStatusDto) },
+        { $ref: getSchemaPath(RescheduleAppointmentDto) },
+      ],
+    },
+  })
+  updateFlexible(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() body: RescheduleAppointmentDto & UpdateAppointmentStatusDto,
+  ) {
+    const tenantId = req.user?.tenantId as string;
+
+    // mudar status?
+    if (typeof (body as any).status === 'string') {
+      const { status } = body as UpdateAppointmentStatusDto;
+      return this.appointmentsService.updateStatus(tenantId, id, status);
+    }
+
+    // reagendar?
+    if ((body as any).startAt || (body as any).endAt) {
+      const { startAt, endAt } = body as RescheduleAppointmentDto;
+      if (!startAt && !endAt) {
+        throw new BadRequestException(
+          'Envie startAt e/ou endAt para reagendar',
+        );
+      }
+      return this.appointmentsService.reschedule(tenantId, id, {
+        startAt,
+        endAt,
+      });
+    }
+
+    throw new BadRequestException(
+      'Envie { status } para mudar status OU { startAt, endAt } para reagendar.',
     );
   }
 
@@ -56,19 +115,5 @@ export class AppointmentsController {
   @Delete(':id')
   remove(@Req() req: any, @Param('id') id: string) {
     return this.appointmentsService.remove(req.user?.tenantId, id);
-  }
-
-  // endpoints gerados — úteis para debug
-  @Get() findAll() {
-    return this.appointmentsService.findAll();
-  }
-  @Get('one/:id') findOne(@Param('id') id: string) {
-    return this.appointmentsService.findOne(id);
-  }
-  @Patch('one/:id') update(
-    @Param('id') id: string,
-    @Body() dto: UpdateAppointmentDto,
-  ) {
-    return this.appointmentsService.update(id, dto);
   }
 }

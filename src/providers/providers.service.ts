@@ -53,6 +53,22 @@ function subtractBlocks(
   // remove fragmentos vazios/invertidos
   return result.filter((r) => r.end - r.start > 0);
 }
+/** Mescla ranges sobrepostos/colados (minutos) */
+function mergeRanges(ranges: { start: number; end: number }[]) {
+  if (ranges.length === 0) return [];
+  const ordered = [...ranges].sort((a, b) => a.start - b.start);
+  const merged: { start: number; end: number }[] = [ordered[0]];
+  for (let i = 1; i < ordered.length; i++) {
+    const last = merged[merged.length - 1];
+    const cur = ordered[i];
+    if (cur.start <= last.end) {
+      last.end = Math.max(last.end, cur.end);
+    } else {
+      merged.push({ ...cur });
+    }
+  }
+  return merged;
+}
 
 @Injectable()
 export class ProvidersService {
@@ -159,48 +175,147 @@ export class ProvidersService {
   async getDayAvailability(params: {
     tenantId: string;
     providerId: string;
-    dateISO: string;
+    dateISO: string; // formato YYYY-MM-DD ou ISO completo; usaremos só a data UTC
   }) {
     const { tenantId, providerId, dateISO } = params;
 
-    // 1) Carrega provider (com template)
+    // 1) Provider do tenant (e ativo)
     const provider = await this.prisma.provider.findFirst({
       where: { id: providerId, tenantId },
-      select: { id: true, weekdayTemplate: true, active: true },
+      select: { id: true, weekdayTemplate: true, active: true, tenantId: true },
     });
-    if (!provider || !provider.active) {
-      throw new Error('Provider não encontrado ou inativo');
-    }
+    if (!provider) throw new NotFoundException('Provider não encontrado');
+    if (!provider.active) throw new BadRequestException('Provider inativo');
 
-    // 2) Determina dia da semana (mon..sun) na sua mesma convenção do template
+    // 2) Janela do dia (UTC)
     const date = new Date(dateISO);
-    const weekdayIndex = date.getUTCDay(); // 0=Dom,1=Seg,...,6=Sáb
-    const keyMap = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-    const weekdayKey = keyMap[weekdayIndex];
+    if (Number.isNaN(date.getTime())) {
+      throw new BadRequestException('dateISO inválido; use YYYY-MM-DD');
+    }
+    const y = date.getUTCFullYear();
+    const m = date.getUTCMonth();
+    const d = date.getUTCDate();
 
-    // 3) Lê intervalos do template para esse dia
+    const dayStart = new Date(Date.UTC(y, m, d, 0, 0, 0));
+    const dayEnd = new Date(Date.UTC(y, m, d, 23, 59, 59));
+
+    const keyMap = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+    const weekdayKey = keyMap[dayStart.getUTCDay()];
+
+    // 3) Intervais de template (HH:mm) -> minutos no dia
     const template =
       (provider.weekdayTemplate as Record<string, [string, string][]> | null) ??
       {};
     const rawIntervals = template[weekdayKey] ?? [];
 
-    // Em minutos
-    const dayIntervals = rawIntervals.map(([start, end]) => ({
-      start: toMin(start),
-      end: toMin(end),
-    }));
+    const dayIntervals = rawIntervals
+      .map(([start, end]) => {
+        const s = toMin(start);
+        const e = toMin(end);
+        return { start: Math.max(0, s), end: Math.min(24 * 60, e) };
+      })
+      .filter((r) => r.end > r.start);
 
-    // Se não tiver intervalo, retorna vazio logo
     if (dayIntervals.length === 0) {
       return {
         providerId,
-        date: dateISO.slice(0, 10),
+        date: `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
         weekday: weekdayKey,
         intervals: [],
       };
     }
 
-    // 4) Busca blocks que toquem o dia (qualquer sobreposição com o dia alvo)
+    // 4) Blocks que sobrepõem o dia
+    const blocks = await this.prisma.block.findMany({
+      where: {
+        tenantId,
+        providerId,
+        startAt: { lt: dayEnd },
+        endAt: { gt: dayStart },
+      },
+      select: { startAt: true, endAt: true },
+      orderBy: { startAt: 'asc' },
+    });
+
+    // 5) Appointments (ignora cancelados) que sobrepõem o dia
+    const appts = await this.prisma.appointment.findMany({
+      where: {
+        tenantId,
+        providerId,
+        status: { not: 'cancelled' as any },
+        startAt: { lt: dayEnd },
+        endAt: { gt: dayStart },
+      },
+      select: { startAt: true, endAt: true },
+      orderBy: { startAt: 'asc' },
+    });
+
+    // 6) Ambos convertidos para minutos no dia
+    const toRangeMin = (s: Date, e: Date) => ({
+      start: Math.max(
+        0,
+        Math.floor((s.getTime() - dayStart.getTime()) / 60000),
+      ),
+      end: Math.min(
+        24 * 60,
+        Math.ceil((e.getTime() - dayStart.getTime()) / 60000),
+      ),
+    });
+
+    const takenRaw = [
+      ...blocks.map((b) => toRangeMin(b.startAt, b.endAt)),
+      ...appts.map((a) => toRangeMin(a.startAt, a.endAt)),
+    ].filter((r) => r.end > r.start);
+
+    // 7) Mescla ranges ocupados sobrepostos para recorte mais limpo
+    const taken = mergeRanges(takenRaw);
+
+    // 8) Subtrai ocupados (blocks + appts) dos livres do template
+    const free = subtractBlocks(dayIntervals, taken);
+
+    // 9) Retorno em HH:mm (como já estavas fazendo)
+    return {
+      providerId,
+      date: `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+      weekday: weekdayKey,
+      intervals: free.map((r) => ({
+        start: toHHMM(r.start),
+        end: toHHMM(r.end),
+      })),
+    };
+  }
+  async getDaySlots(params: {
+    tenantId: string;
+    providerId: string;
+    serviceId: string; // para conhecer a duração (durationMin)
+    dateISO: string; // 'YYYY-MM-DD'
+  }) {
+    const { tenantId, providerId, serviceId, dateISO } = params;
+
+    // 0) Carrega provider + template e o service (para durationMin)
+    const [provider, service] = await Promise.all([
+      this.prisma.provider.findFirst({
+        where: { id: providerId, tenantId },
+        select: { id: true, weekdayTemplate: true, active: true },
+      }),
+      this.prisma.service.findFirst({
+        where: { id: serviceId, tenantId },
+        select: { id: true, durationMin: true, active: true },
+      }),
+    ]);
+
+    if (!provider || !provider.active) {
+      throw new Error('Provider não encontrado ou inativo');
+    }
+    if (!service || !service.active) {
+      throw new Error('Service não encontrado ou inativo');
+    }
+    const duration = service.durationMin; // minutos
+
+    // 1) Determina o dia/limites (UTC)
+    const date = new Date(dateISO);
+    if (isNaN(date.getTime())) throw new Error('dateISO inválido');
+
     const dayStart = new Date(
       Date.UTC(
         date.getUTCFullYear(),
@@ -222,11 +337,35 @@ export class ProvidersService {
       ),
     );
 
+    // 2) Intervais do template para o dia
+    const weekdayIndex = date.getUTCDay(); // 0..6
+    const keyMap = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+    const weekdayKey = keyMap[weekdayIndex];
+
+    const template =
+      (provider.weekdayTemplate as Record<string, [string, string][]> | null) ??
+      {};
+    const rawIntervals = template[weekdayKey] ?? [];
+    let free = rawIntervals.map(([start, end]) => ({
+      start: toMin(start),
+      end: toMin(end),
+    }));
+
+    if (free.length === 0) {
+      return {
+        providerId,
+        serviceId,
+        date: dateISO,
+        weekday: weekdayKey,
+        slots: [] as { startAt: string; endAt: string }[],
+      };
+    }
+
+    // 3) Blocks que toquem o dia
     const blocks = await this.prisma.block.findMany({
       where: {
         tenantId,
         providerId,
-        // sobrepõe o dia: start < dayEnd && end > dayStart
         startAt: { lt: dayEnd },
         endAt: { gt: dayStart },
       },
@@ -234,7 +373,6 @@ export class ProvidersService {
       orderBy: { startAt: 'asc' },
     });
 
-    // 5) Converte blocks para [start,end] em minutos (recortados ao dia)
     const blockRanges = blocks.map((b) => {
       const s = Math.max(
         0,
@@ -247,18 +385,76 @@ export class ProvidersService {
       return { start: s, end: e };
     });
 
-    // 6) Subtrai blocks dos intervalos do template
-    const free = subtractBlocks(dayIntervals, blockRanges);
+    // Subtrai blocks do template
+    free = subtractBlocks(free, blockRanges);
 
-    // 7) Responde no formato original ('HH:mm')
+    if (free.length === 0) {
+      return {
+        providerId,
+        serviceId,
+        date: dateISO,
+        weekday: weekdayKey,
+        slots: [] as { startAt: string; endAt: string }[],
+      };
+    }
+
+    // 4) Ocupações por appointments (≠ cancelled) que toquem o dia
+    const appts = await this.prisma.appointment.findMany({
+      where: {
+        tenantId,
+        providerId,
+        // start < dayEnd && end > dayStart
+        startAt: { lt: dayEnd },
+        endAt: { gt: dayStart },
+        status: { not: 'cancelled' as any },
+      },
+      select: { startAt: true, endAt: true },
+      orderBy: { startAt: 'asc' },
+    });
+
+    const busyApptRanges = appts.map((a) => {
+      const s = Math.max(
+        0,
+        Math.floor((a.startAt.getTime() - dayStart.getTime()) / 60000),
+      );
+      const e = Math.min(
+        24 * 60,
+        Math.ceil((a.endAt.getTime() - dayStart.getTime()) / 60000),
+      );
+      return { start: s, end: e };
+    });
+
+    // Subtrai agendamentos da disponibilidade restante
+    free = subtractBlocks(free, busyApptRanges);
+
+    // 5) Geração de slots (passo de 15 min), respeitando a duração do service
+    const STEP = 15; // minutos
+    const slots: { startAt: string; endAt: string }[] = [];
+
+    for (const range of free) {
+      for (let m = range.start; m + duration <= range.end; m += STEP) {
+        const startMin = m;
+        const endMin = m + duration;
+        if (endMin <= range.end) {
+          const startAt = new Date(
+            dayStart.getTime() + startMin * 60000,
+          ).toISOString();
+          const endAt = new Date(
+            dayStart.getTime() + endMin * 60000,
+          ).toISOString();
+          slots.push({ startAt, endAt });
+        }
+      }
+    }
+
     return {
       providerId,
-      date: dateISO.slice(0, 10),
+      serviceId,
+      date: dateISO,
       weekday: weekdayKey,
-      intervals: free.map((r) => ({
-        start: toHHMM(r.start),
-        end: toHHMM(r.end),
-      })),
+      durationMin: duration,
+      stepMin: STEP,
+      slots,
     };
   }
 }

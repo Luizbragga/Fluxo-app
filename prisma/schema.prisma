@@ -24,11 +24,12 @@ enum Specialty {
   other
 }
 
-enum AppointmentStatus {
+enum AppointmentState {
   scheduled
-  confirmed
-  canceled
+  in_service
   done
+  no_show
+  cancelled
 }
 
 model Tenant {
@@ -141,6 +142,7 @@ model Appointment {
   endAt       DateTime
   clientName  String
   clientPhone String
+  status      AppointmentState @default(scheduled)
 
   createdById String?
   createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
