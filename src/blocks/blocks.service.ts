@@ -95,4 +95,66 @@ export class BlocksService {
       orderBy: { startAt: 'asc' },
     });
   }
+  async update(
+    tenantId: string,
+    id: string,
+    dto: { startAt?: string; endAt?: string; reason?: string },
+  ) {
+    // 1) pegar o bloqueio e validar tenant
+    const existing = await this.prisma.block.findUnique({ where: { id } });
+    if (!existing || existing.tenantId !== tenantId) {
+      throw new ForbiddenException('Block inválido para este tenant.');
+    }
+
+    // 2) montar dados novos (mantendo o que não foi enviado)
+    const startAt = dto.startAt ?? existing.startAt.toISOString();
+    const endAt = dto.endAt ?? existing.endAt.toISOString();
+
+    if (new Date(startAt) >= new Date(endAt)) {
+      throw new BadRequestException('startAt deve ser anterior a endAt.');
+    }
+
+    // 3) validar conflitos com outros blocks/appointments do mesmo provider
+    const overlaps = await this.prisma.appointment.findFirst({
+      where: {
+        tenantId,
+        providerId: existing.providerId,
+        // (start < endAt && end > startAt)
+        startAt: { lt: new Date(endAt) },
+        endAt: { gt: new Date(startAt) },
+        status: { in: ['scheduled', 'in_service'] },
+        id: { not: undefined }, // só para clareza
+      },
+      select: { id: true },
+    });
+
+    if (overlaps) {
+      throw new BadRequestException('Conflito com outro agendamento.');
+    }
+
+    const overlapBlock = await this.prisma.block.findFirst({
+      where: {
+        tenantId,
+        providerId: existing.providerId,
+        id: { not: id },
+        startAt: { lt: new Date(endAt) },
+        endAt: { gt: new Date(startAt) },
+      },
+      select: { id: true },
+    });
+
+    if (overlapBlock) {
+      throw new BadRequestException('Conflito com outro bloqueio.');
+    }
+
+    // 4) persistir
+    return this.prisma.block.update({
+      where: { id },
+      data: {
+        startAt: new Date(startAt),
+        endAt: new Date(endAt),
+        reason: dto.reason ?? existing.reason,
+      },
+    });
+  }
 }

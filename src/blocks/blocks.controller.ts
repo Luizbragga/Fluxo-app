@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Patch,
   Param,
   Post,
   Query,
@@ -20,7 +21,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 @ApiTags('Blocks')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Controller({ path: 'v1/blocks' })
+@Controller({ path: 'blocks' })
 export class BlocksController {
   constructor(private readonly blocksService: BlocksService) {}
 
@@ -34,6 +35,16 @@ export class BlocksController {
       role: req.user?.role as string,
     };
     return this.blocksService.create(tenantId, user, dto);
+  }
+  @Roles('owner', 'admin', 'attendant', 'provider')
+  @Patch(':id')
+  update(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() dto: UpdateBlockDto,
+  ) {
+    const tenantId = req.user?.tenantId as string;
+    return this.blocksService.update(tenantId, id, dto);
   }
 
   // owner | admin
