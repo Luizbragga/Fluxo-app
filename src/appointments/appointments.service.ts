@@ -22,7 +22,6 @@ export class AppointmentsService {
     }
   }
 
-  // CREATE --------------------------------------------------------------------
   async create(tenantId: string, userId: string, dto: CreateAppointmentDto) {
     const startAt = new Date(dto.startAt);
     const endAt = new Date(dto.endAt);
@@ -84,6 +83,7 @@ export class AppointmentsService {
       );
     }
 
+    // >>> AQUI: cria já com os campos denormalizados do serviço <<<
     return this.prisma.appointment.create({
       data: {
         tenantId,
@@ -94,6 +94,11 @@ export class AppointmentsService {
         clientName: dto.clientName,
         clientPhone: dto.clientPhone,
         createdById: userId,
+
+        // novos obrigatórios no schema:
+        serviceName: service.name,
+        serviceDurationMin: service.durationMin,
+        servicePriceCents: service.priceCents,
       },
     });
   }

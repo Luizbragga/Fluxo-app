@@ -33,10 +33,13 @@ enum AppointmentState {
 }
 
 model Tenant {
-  id           String        @id @default(cuid())
-  name         String
-  nif          String? // opcional
-  createdAt    DateTime      @default(now())
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique // <-- necessário para o upsert
+  nif       String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   services     Service[]
   users        User[]
   providers    Provider[]
@@ -134,10 +137,13 @@ model Block {
 }
 
 model Appointment {
-  id          String   @id @default(cuid())
+  id          String           @id @default(cuid())
   tenantId    String
   providerId  String
   serviceId   String
+  serviceName        String
+  serviceDurationMin Int
+  servicePriceCents  Int
   startAt     DateTime
   endAt       DateTime
   clientName  String

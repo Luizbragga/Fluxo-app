@@ -16,6 +16,15 @@ const REFRESH_TTL_SEC = 60 * 60 * 24 * 7; // 7 dias
 type AccessPayload = { sub: string; tenantId: string; role: Role };
 type RefreshPayload = { sub: string; tenantId: string };
 
+function makeSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)+/g, '');
+}
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -24,6 +33,7 @@ export class AuthService {
   ) {}
 
   // ---------- helpers ----------
+
   private signAccess(user: AccessPayload) {
     return this.jwt.sign(
       { sub: user.sub, tenantId: user.tenantId, role: user.role },
@@ -44,10 +54,37 @@ export class AuthService {
     );
   }
 
+  private async saveRefresh(userId: string, refresh: string) {
+    const decoded = this.jwt.decode(refresh) as { exp?: number } | null;
+    const expSec =
+      decoded?.exp ?? Math.floor(Date.now() / 1000) + REFRESH_TTL_SEC;
+    const expiresAt = new Date(expSec * 1000);
+    const tokenHash = await bcrypt.hash(refresh, 10);
+
+    await this.prisma.refreshToken.create({
+      data: { userId, tokenHash, expiresAt },
+    });
+  }
+
+  // Gera um slug único para tenants com nomes repetidos
+  private async generateUniqueTenantSlug(baseName: string): Promise<string> {
+    let base = makeSlug(baseName);
+    if (!base) base = `tenant-${Date.now()}`;
+
+    let slug = base;
+    let n = 1;
+    // findUnique exige a constraint/índice único em slug (está no schema)
+    while (await this.prisma.tenant.findUnique({ where: { slug } })) {
+      slug = `${base}-${n++}`;
+    }
+    return slug;
+  }
+
   // ---------- cadastro ----------
   async registerTenant(dto: RegisterTenantDto) {
     const role = dto.ownerRole ?? Role.owner;
 
+    // email não pode existir em nenhum tenant (decisão atual)
     const exists = await this.prisma.user.findFirst({
       where: { email: dto.ownerEmail },
     });
@@ -56,11 +93,17 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
+    const slug = await this.generateUniqueTenantSlug(dto.tenantName);
 
     const { tenant, user } = await this.prisma.$transaction(async (tx) => {
       const tenant = await tx.tenant.create({
-        data: { name: dto.tenantName, nif: dto.tenantNif ?? null },
+        data: {
+          name: dto.tenantName,
+          slug,
+          nif: dto.tenantNif ?? null,
+        },
       });
+
       const user = await tx.user.create({
         data: {
           tenantId: tenant.id,
@@ -69,8 +112,10 @@ export class AuthService {
           email: dto.ownerEmail,
           phone: dto.ownerPhone ?? null,
           passwordHash,
+          active: true, // padrão: dono ativo
         },
       });
+
       return { tenant, user };
     });
 
@@ -83,7 +128,7 @@ export class AuthService {
     await this.saveRefresh(user.id, refresh);
 
     return {
-      tenant: { id: tenant.id, name: tenant.name },
+      tenant: { id: tenant.id, name: tenant.name, slug: tenant.slug },
       user: { id: user.id, role: user.role },
       tokens: { access, refresh },
     };
@@ -91,13 +136,26 @@ export class AuthService {
 
   // ---------- login ----------
   async login(dto: LoginDto) {
+    console.log('LOGIN DTO =>', dto);
+
     const user = await this.prisma.user.findFirst({
       where: { email: dto.email, active: true },
     });
-    if (!user) throw new UnauthorizedException('Credenciais inválidas');
+
+    console.log('USER ENCONTRADO =>', user);
+
+    if (!user) {
+      console.log('Nenhum usuário encontrado com esse email/active');
+      throw new UnauthorizedException('Credenciais inválidas');
+    }
 
     const ok = await bcrypt.compare(dto.password, user.passwordHash);
-    if (!ok) throw new UnauthorizedException('Credenciais inválidas');
+    console.log('RESULTADO BCRYPT =>', ok);
+
+    if (!ok) {
+      console.log('Senha não bateu com o hash do banco');
+      throw new UnauthorizedException('Credenciais inválidas');
+    }
 
     const access = this.signAccess({
       sub: user.id,
@@ -128,7 +186,7 @@ export class AuthService {
     const userId = decoded?.sub as string | undefined;
     if (!userId) throw new UnauthorizedException('Refresh inválido');
 
-    // 2) Localiza o hash correspondente a ESTE refresh e confere expiração
+    // 2) Busca o hash correspondente e confere expiração
     const rows = await this.prisma.refreshToken.findMany({ where: { userId } });
 
     let usedRowId: string | null = null;
@@ -145,7 +203,7 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new UnauthorizedException('Usuário não encontrado');
 
-    // 4) Emite novo access e novo refresh usando 'sub'
+    // 4) Emite novo access e novo refresh
     const access = this.signAccess({
       sub: user.id,
       tenantId: user.tenantId,
@@ -156,12 +214,10 @@ export class AuthService {
       tenantId: user.tenantId,
     });
 
-    // 5) Rotação: apaga o refresh usado e salva o novo
-    // 5) Rotação: apaga o refresh usado e salva o novo (callback transaction)
+    // 5) Rotação dos refresh tokens
     await this.prisma.$transaction(async (tx) => {
       await tx.refreshToken.delete({ where: { id: usedRowId! } });
 
-      // salvar o novo refresh dentro da transação
       const decoded = this.jwt.decode(newRefresh) as { exp?: number } | null;
       const expSec =
         decoded?.exp ?? Math.floor(Date.now() / 1000) + REFRESH_TTL_SEC;
@@ -192,18 +248,5 @@ export class AuthService {
         break;
       }
     }
-  }
-
-  // ---------- persistência do refresh ----------
-  private async saveRefresh(userId: string, refresh: string) {
-    const decoded = this.jwt.decode(refresh) as { exp?: number } | null;
-    const expSec =
-      decoded?.exp ?? Math.floor(Date.now() / 1000) + REFRESH_TTL_SEC;
-    const expiresAt = new Date(expSec * 1000);
-    const tokenHash = await bcrypt.hash(refresh, 10);
-
-    await this.prisma.refreshToken.create({
-      data: { userId, tokenHash, expiresAt },
-    });
   }
 }
