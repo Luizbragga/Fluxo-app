@@ -6,6 +6,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProviderDto } from './dto/create-provider.dto';
 import { UpdateProviderDto } from './dto/update-provider.dto';
+
 /** Converte 'HH:mm' -> minutos desde 00:00 */
 function toMin(hhmm: string): number {
   const [h, m] = hhmm.split(':').map(Number);
@@ -74,7 +75,7 @@ function mergeRanges(ranges: { start: number; end: number }[]) {
 export class ProvidersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  // cria provider garantindo que user pertence ao mesmo tenant e não está vinculado ainda
+  // cria provider garantindo que user e location pertencem ao mesmo tenant
   async create(tenantId: string, dto: CreateProviderDto) {
     const user = await this.prisma.user.findUnique({
       where: { id: dto.userId },
@@ -90,10 +91,21 @@ export class ProvidersService {
       );
     }
 
+    // valida se a location pertence ao mesmo tenant
+    const location = await this.prisma.location.findFirst({
+      where: { id: dto.locationId, tenantId },
+      select: { id: true },
+    });
+
+    if (!location) {
+      throw new BadRequestException('locationId inválido para este tenant');
+    }
+
     const provider = await this.prisma.provider.create({
       data: {
         tenantId,
         userId: dto.userId,
+        locationId: dto.locationId,
         name: dto.name,
         specialty: dto.specialty ?? 'other',
         weekdayTemplate: dto.weekdayTemplate ?? undefined,
@@ -110,6 +122,7 @@ export class ProvidersService {
       orderBy: { name: 'asc' },
       include: {
         user: { select: { id: true, email: true, name: true, role: true } },
+        location: { select: { id: true, name: true, slug: true } },
       },
     });
   }
@@ -119,6 +132,7 @@ export class ProvidersService {
       where: { id, tenantId },
       include: {
         user: { select: { id: true, email: true, name: true, role: true } },
+        location: { select: { id: true, name: true, slug: true } },
       },
     });
     if (!provider) throw new NotFoundException('Provider não encontrado');
@@ -152,11 +166,24 @@ export class ProvidersService {
       }
     }
 
+    // se trocar locationId, validar que pertence ao mesmo tenant
+    if (dto.locationId && dto.locationId !== exists.locationId) {
+      const loc = await this.prisma.location.findFirst({
+        where: { id: dto.locationId, tenantId },
+        select: { id: true },
+      });
+
+      if (!loc) {
+        throw new BadRequestException('locationId inválido para este tenant');
+      }
+    }
+
     return this.prisma.provider.update({
       where: { id },
       data: {
         name: dto.name ?? undefined,
         userId: dto.userId ?? undefined,
+        locationId: dto.locationId ?? undefined,
         specialty: dto.specialty ?? undefined,
         weekdayTemplate: dto.weekdayTemplate ?? undefined,
         active: dto.active ?? undefined,
@@ -172,6 +199,7 @@ export class ProvidersService {
     await this.prisma.provider.delete({ where: { id } });
     return { ok: true };
   }
+
   async getDayAvailability(params: {
     tenantId: string;
     providerId: string;
@@ -202,7 +230,7 @@ export class ProvidersService {
     const keyMap = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
     const weekdayKey = keyMap[dayStart.getUTCDay()];
 
-    // 3) Intervais de template (HH:mm) -> minutos no dia
+    // 3) Intervalos de template (HH:mm) -> minutos no dia
     const template =
       (provider.weekdayTemplate as Record<string, [string, string][]> | null) ??
       {};
@@ -219,7 +247,10 @@ export class ProvidersService {
     if (dayIntervals.length === 0) {
       return {
         providerId,
-        date: `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+        date: `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(
+          2,
+          '0',
+        )}`,
         weekday: weekdayKey,
         intervals: [],
       };
@@ -276,7 +307,10 @@ export class ProvidersService {
     // 9) Retorno em HH:mm (como já estavas fazendo)
     return {
       providerId,
-      date: `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+      date: `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(
+        2,
+        '0',
+      )}`,
       weekday: weekdayKey,
       intervals: free.map((r) => ({
         start: toHHMM(r.start),
@@ -284,6 +318,7 @@ export class ProvidersService {
       })),
     };
   }
+
   async getDaySlots(params: {
     tenantId: string;
     providerId: string;
@@ -337,7 +372,7 @@ export class ProvidersService {
       ),
     );
 
-    // 2) Intervais do template para o dia
+    // 2) Intervalos do template para o dia
     const weekdayIndex = date.getUTCDay(); // 0..6
     const keyMap = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
     const weekdayKey = keyMap[weekdayIndex];
@@ -403,7 +438,6 @@ export class ProvidersService {
       where: {
         tenantId,
         providerId,
-        // start < dayEnd && end > dayStart
         startAt: { lt: dayEnd },
         endAt: { gt: dayStart },
         status: { not: 'cancelled' as any },

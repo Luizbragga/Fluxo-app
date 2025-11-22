@@ -34,6 +34,11 @@ export class AppointmentsService {
     // validar provider e service pertencem ao tenant
     const provider = await this.prisma.provider.findUnique({
       where: { id: dto.providerId },
+      select: {
+        id: true,
+        tenantId: true,
+        locationId: true,
+      },
     });
     if (!provider || provider.tenantId !== tenantId) {
       throw new ForbiddenException('Provider inválido para este tenant.');
@@ -83,11 +88,12 @@ export class AppointmentsService {
       );
     }
 
-    // >>> AQUI: cria já com os campos denormalizados do serviço <<<
+    // cria já com os campos denormalizados do serviço + locationId do provider
     return this.prisma.appointment.create({
       data: {
         tenantId,
         providerId: dto.providerId,
+        locationId: provider.locationId,
         serviceId: dto.serviceId,
         startAt,
         endAt,
@@ -95,7 +101,6 @@ export class AppointmentsService {
         clientPhone: dto.clientPhone,
         createdById: userId,
 
-        // novos obrigatórios no schema:
         serviceName: service.name,
         serviceDurationMin: service.durationMin,
         servicePriceCents: service.priceCents,

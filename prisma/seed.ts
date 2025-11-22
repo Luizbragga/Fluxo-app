@@ -1,225 +1,285 @@
-import { PrismaClient, Role } from '@prisma/client';
+// prisma/seed.ts
+import {
+  PrismaClient,
+  Role,
+  Specialty,
+  AppointmentState,
+} from '@prisma/client';
+import * as bcrypt from 'bcrypt';
+
 const prisma = new PrismaClient();
 
-/** util: cria se não existir */
-async function ensureTenant(slug: string, name: string) {
-  const existing = await prisma.tenant.findFirst({ where: { slug } });
-  if (existing) return existing;
-  return prisma.tenant.create({
-    data: { slug, name },
+// --- helpers ---
+
+async function ensureTenantWithLocation(opts: {
+  tenantSlug: string;
+  tenantName: string;
+  tenantNif?: string | null;
+  locationSlug: string;
+  locationName: string;
+  locationAddress?: string | null;
+}) {
+  const {
+    tenantSlug,
+    tenantName,
+    tenantNif,
+    locationSlug,
+    locationName,
+    locationAddress,
+  } = opts;
+
+  // 1) Tenant
+  let tenant = await prisma.tenant.findFirst({ where: { slug: tenantSlug } });
+
+  if (!tenant) {
+    tenant = await prisma.tenant.create({
+      data: {
+        slug: tenantSlug,
+        name: tenantName,
+        nif: tenantNif ?? null,
+      },
+    });
+  }
+
+  // 2) Location (filial) desse tenant
+  let location = await prisma.location.findFirst({
+    where: { tenantId: tenant.id, slug: locationSlug },
   });
+
+  if (!location) {
+    location = await prisma.location.create({
+      data: {
+        tenantId: tenant.id,
+        slug: locationSlug,
+        name: locationName,
+        address: locationAddress ?? null,
+      },
+    });
+  }
+
+  return { tenant, location };
 }
 
-/** util: upsert por (tenantId, email) que é único no seu schema */
-async function ensureUser(params: {
+async function createUserIfNotExists(opts: {
   tenantId: string;
-  email: string;
-  name: string;
+  locationId?: string | null;
   role: Role;
-  passwordHash: string;
-  phone?: string | null;
-  active?: boolean;
-}) {
-  const {
-    tenantId,
-    email,
-    name,
-    role,
-    passwordHash,
-    phone = null,
-    active = true,
-  } = params;
-  return prisma.user.upsert({
-    where: { tenantId_email: { tenantId, email } },
-    update: {
-      name,
-      role,
-      phone,
-      passwordHash,
-      active,
-    },
-    create: {
-      tenantId,
-      email,
-      name,
-      role,
-      phone,
-      passwordHash,
-      active,
-    },
-  });
-}
-
-/** util: pega ou cria um provider (1:1 com user) */
-async function ensureProvider(params: {
-  tenantId: string;
-  userId: string;
   name: string;
-  weekdayTemplate?: any;
-  specialty?: any;
+  email: string;
+  phone?: string | null;
+  password: string;
 }) {
-  const {
-    tenantId,
-    userId,
-    name,
-    weekdayTemplate = {},
-    specialty = 'barber',
-  } = params;
-  // provider é 1:1 com userId (unique), então ou existe ou criamos
-  const exists = await prisma.provider.findFirst({
-    where: { tenantId, userId },
-  });
-  if (exists) return exists;
+  const { tenantId, locationId, role, name, email, phone, password } = opts;
 
-  return prisma.provider.create({
+  // email é globalmente único no schema atual
+  const existing = await prisma.user.findUnique({
+    where: { email },
+  });
+
+  if (existing) return existing;
+
+  const passwordHash = await bcrypt.hash(password, 10);
+
+  const user = await prisma.user.create({
     data: {
       tenantId,
-      userId,
+      locationId: locationId ?? null,
+      role,
       name,
-      specialty,
-      weekdayTemplate,
+      email,
+      phone: phone ?? null,
+      passwordHash,
       active: true,
     },
   });
+
+  return user;
 }
 
-/** util: cria service se não existir por (tenantId, name) — não é unique no schema, então fazemos find+create */
-async function ensureService(params: {
+async function createProviderIfNotExists(opts: {
+  tenantId: string;
+  locationId: string;
+  userId: string;
+  name: string;
+  specialty?: Specialty;
+}) {
+  const { tenantId, locationId, userId, name, specialty } = opts;
+
+  const existing = await prisma.provider.findFirst({
+    where: { tenantId, userId },
+  });
+
+  if (existing) return existing;
+
+  const provider = await prisma.provider.create({
+    data: {
+      tenantId,
+      locationId,
+      userId,
+      name,
+      specialty: specialty ?? Specialty.other,
+      active: true,
+    },
+  });
+
+  return provider;
+}
+
+async function createServiceIfNotExists(opts: {
   tenantId: string;
   name: string;
   durationMin: number;
   priceCents: number;
-  active?: boolean;
 }) {
-  const { tenantId, name, durationMin, priceCents, active = true } = params;
+  const { tenantId, name, durationMin, priceCents } = opts;
+
   const existing = await prisma.service.findFirst({
     where: { tenantId, name },
   });
-  if (existing) {
-    // mantém valores principais atualizados
-    return prisma.service.update({
-      where: { id: existing.id },
-      data: { durationMin, priceCents, active },
-    });
-  }
-  return prisma.service.create({
-    data: { tenantId, name, durationMin, priceCents, active },
-  });
-}
 
-async function main() {
-  // 1) Tenant
-  const tenant = await ensureTenant('demo-barber', 'Demo Barber');
+  if (existing) return existing;
 
-  // 2) Usuários
-  // hash "demo123" (exemplo) — troque se quiser
-  const passwordHash =
-    '$2b$10$wC7Gv3mW4W2m3q9oTgHqYOGb3gkqv0Zl6aI2P6l0oW9a4q7s1O9y.';
-
-  const owner = await ensureUser({
-    tenantId: tenant.id,
-    email: 'owner@demo.com',
-    name: 'Owner Demo',
-    role: 'owner',
-    passwordHash,
-    active: true,
-  });
-
-  const providerUser = await ensureUser({
-    tenantId: tenant.id,
-    email: 'provider@demo.com',
-    name: 'Rafa Barber (User)',
-    role: 'provider',
-    passwordHash,
-    active: true,
-  });
-
-  // 3) Provider (vincula ao providerUser)
-  const provider = await ensureProvider({
-    tenantId: tenant.id,
-    userId: providerUser.id,
-    name: 'Rafa Barber',
-    specialty: 'barber',
-    weekdayTemplate: {
-      mon: [
-        ['09:00', '12:00'],
-        ['14:00', '18:00'],
-      ],
-      tue: [
-        ['09:00', '12:00'],
-        ['14:00', '18:00'],
-      ],
-      wed: [],
-      thu: [
-        ['09:00', '12:00'],
-        ['14:00', '18:00'],
-      ],
-      fri: [
-        ['09:00', '12:00'],
-        ['14:00', '18:00'],
-      ],
-      sat: [['09:00', '12:00']],
-      sun: [],
+  const service = await prisma.service.create({
+    data: {
+      tenantId,
+      name,
+      durationMin,
+      priceCents,
+      active: true,
     },
   });
 
-  // 4) Services
-  const corte = await ensureService({
+  return service;
+}
+
+async function createDemoAppointment(opts: {
+  tenantId: string;
+  locationId: string;
+  providerId: string;
+  serviceId: string;
+  serviceName: string;
+  serviceDurationMin: number;
+  servicePriceCents: number;
+  createdById: string;
+}) {
+  const {
+    tenantId,
+    locationId,
+    providerId,
+    serviceId,
+    serviceName,
+    serviceDurationMin,
+    servicePriceCents,
+    createdById,
+  } = opts;
+
+  const now = new Date();
+  const startAt = new Date(now.getTime() + 60 * 60 * 1000); // +1h
+  const endAt = new Date(startAt.getTime() + serviceDurationMin * 60 * 1000);
+
+  await prisma.appointment.create({
+    data: {
+      tenantId,
+      locationId,
+      providerId,
+      serviceId,
+      serviceName,
+      serviceDurationMin,
+      servicePriceCents,
+      startAt,
+      endAt,
+      clientName: 'Cliente Demo',
+      clientPhone: '+351900000000',
+      status: AppointmentState.scheduled,
+      createdById,
+    },
+  });
+}
+
+// --- main ---
+
+async function main() {
+  // Tenant + filial demo
+  const { tenant, location } = await ensureTenantWithLocation({
+    tenantSlug: 'demo-barber',
+    tenantName: 'Demo Barber',
+    tenantNif: null,
+    locationSlug: 'demo-centro',
+    locationName: 'Demo Barber - Centro',
+    locationAddress: 'Rua Demo 123, Centro',
+  });
+
+  // Senha demo (a mesma para todos os usuários de seed)
+  const demoPassword = 'demo123';
+
+  // Owner (sem locationId, enxerga todas as filiais do tenant)
+  const ownerUser = await createUserIfNotExists({
     tenantId: tenant.id,
-    name: 'Corte',
+    locationId: null,
+    role: Role.owner,
+    name: 'Owner Demo',
+    email: 'owner@demo.com',
+    phone: '+351900000001',
+    password: demoPassword,
+  });
+
+  // Provider user (ligado à filial Demo - Centro)
+  const providerUser = await createUserIfNotExists({
+    tenantId: tenant.id,
+    locationId: location.id,
+    role: Role.provider,
+    name: 'Rafa Barber',
+    email: 'provider@demo.com',
+    phone: '+351900000002',
+    password: demoPassword,
+  });
+
+  // Provider (1:1 com user provider)
+  const provider = await createProviderIfNotExists({
+    tenantId: tenant.id,
+    locationId: location.id,
+    userId: providerUser.id,
+    name: providerUser.name,
+    specialty: Specialty.barber,
+  });
+
+  // Alguns serviços demo
+  const corte = await createServiceIfNotExists({
+    tenantId: tenant.id,
+    name: 'Corte masculino',
     durationMin: 30,
     priceCents: 1500,
   });
 
-  const barba = await ensureService({
+  const barba = await createServiceIfNotExists({
     tenantId: tenant.id,
     name: 'Barba',
-    durationMin: 30,
-    priceCents: 1200,
+    durationMin: 20,
+    priceCents: 1000,
   });
 
-  // 5) Um agendamento hoje (opcional)
-  const now = new Date();
-  const start = new Date(
-    Date.UTC(
-      now.getUTCFullYear(),
-      now.getUTCMonth(),
-      now.getUTCDate(),
-      11,
-      15,
-      0,
-    ),
+  // Um agendamento demo só pra ter dado no painel
+  await createDemoAppointment({
+    tenantId: tenant.id,
+    locationId: location.id,
+    providerId: provider.id,
+    serviceId: corte.id,
+    serviceName: corte.name,
+    serviceDurationMin: corte.durationMin,
+    servicePriceCents: corte.priceCents,
+    createdById: ownerUser.id,
+  });
+
+  console.log(
+    '✅ Seed concluído com tenant + location + owner + provider + serviços + 1 appointment demo',
   );
-  const end = new Date(start.getTime() + corte.durationMin * 60_000);
-
-  await prisma.appointment.create({
-    data: {
-      tenantId: tenant.id,
-      providerId: provider.id,
-      serviceId: corte.id,
-      startAt: start,
-      endAt: end,
-      clientName: 'Cliente Demo',
-      clientPhone: '+351910000000',
-      status: 'scheduled',
-      serviceName: corte.name,
-      serviceDurationMin: corte.durationMin,
-      servicePriceCents: corte.priceCents,
-    },
-  });
-
-  console.log('Seed OK:', {
-    tenant: { id: tenant.id, slug: tenant.slug },
-    owner: { id: owner.id, email: owner.email },
-    providerUser: { id: providerUser.id, email: providerUser.email },
-    provider: { id: provider.id, name: provider.name },
-    services: [corte.name, barba.name],
-  });
 }
 
 main()
   .catch((e) => {
-    console.error(e);
+    console.error('❌ Erro no seed:', e);
     process.exit(1);
   })
-  .finally(async () => prisma.$disconnect());
+  .finally(async () => {
+    await prisma.$disconnect();
+  });

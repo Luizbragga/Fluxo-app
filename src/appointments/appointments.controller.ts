@@ -21,28 +21,32 @@ import {
 import { AppointmentsService } from './appointments.service';
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { RolesGuard } from '../auth/guards/roles.guard';
-import { Roles } from '../auth/decorators/roles.decorator';
+
+import { Roles } from '../common/decorators/roles.decorator';
+import { Role } from '@prisma/client';
+
 import { ListAppointmentsDayQueryDto } from './dto/list-day.query.dto';
 import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto';
 import { UpdateAppointmentStatusDto } from './dto/update-status.dto';
 
 @ApiTags('Appointments')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard)
 @Controller('appointments')
 export class AppointmentsController {
   constructor(private readonly appointmentsService: AppointmentsService) {}
 
-  @Roles('owner', 'admin', 'attendant', 'provider')
+  // Criar appointment (qualquer perfil interno do tenant no MVP)
+  @Roles(Role.owner, Role.admin, Role.attendant, Role.provider)
   @Post()
   create(@Req() req: any, @Body() dto: CreateAppointmentDto) {
-    const tenantId = req.user?.tenantId;
-    const userId = req.user?.id;
+    const tenantId = req.user?.tenantId as string;
+    const userId = req.user?.id as string;
     return this.appointmentsService.create(tenantId, userId, dto);
   }
 
-  @Roles('owner', 'admin', 'attendant', 'provider')
+  // Listar appointments de um dia (com providerId opcional)
+  @Roles(Role.owner, Role.admin, Role.attendant, Role.provider)
   @Get()
   @ApiQuery({
     name: 'date',
@@ -67,7 +71,8 @@ export class AppointmentsController {
     );
   }
 
-  @Roles('owner', 'admin', 'attendant', 'provider')
+  // Atualização flexível: OU mudar status OU reagendar
+  @Roles(Role.owner, Role.admin, Role.attendant, Role.provider)
   @Patch(':id')
   @ApiBody({
     description:
@@ -111,9 +116,11 @@ export class AppointmentsController {
     );
   }
 
-  @Roles('owner', 'admin', 'attendant', 'provider')
+  // Cancelamento lógico (status = cancelled)
+  @Roles(Role.owner, Role.admin, Role.attendant, Role.provider)
   @Delete(':id')
   remove(@Req() req: any, @Param('id') id: string) {
-    return this.appointmentsService.remove(req.user?.tenantId, id);
+    const tenantId = req.user?.tenantId as string;
+    return this.appointmentsService.remove(tenantId, id);
   }
 }

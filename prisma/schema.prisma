@@ -45,26 +45,46 @@ model Tenant {
   providers    Provider[]
   blocks       Block[]
   appointments Appointment[]
+  locations    Location[]
+}
+
+model Location {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  slug      String
+  address   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  providers    Provider[]
+  appointments Appointment[]
+  blocks       Block[]
+  users        User[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId])
 }
 
 model User {
   id           String    @id @default(cuid())
   tenantId     String
+  locationId   String?
   role         Role
   name         String
-  email        String
+  email        String    @unique
   phone        String?
   passwordHash String
   provider     Provider?
   active       Boolean   @default(true)
   createdAt    DateTime  @default(now())
 
-  // refresh tokens serão guardados na tabela RefreshToken
   tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  location     Location?      @relation(fields: [locationId], references: [id])
   tokens       RefreshToken[]
   appointments Appointment[]
 
-  @@unique([tenantId, email]) // email único dentro do tenant
   @@index([tenantId])
 }
 
@@ -102,22 +122,24 @@ model Provider {
   id              String    @id @default(cuid())
   tenantId        String
   userId          String    @unique // <-- único para garantir 1:1 com User
+  locationId      String
   name            String
   specialty       Specialty @default(other)
   weekdayTemplate Json?
   active          Boolean   @default(true)
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
 
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   blocks       Block[]
   appointments Appointment[]
 
-  // Índices úteis para consultas por tenant
   @@index([tenantId])
   @@index([tenantId, active])
+  @@index([tenantId, locationId])
 }
 
 model Block {
@@ -129,26 +151,29 @@ model Block {
   reason     String?
   createdAt  DateTime @default(now())
 
-  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  provider   Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  location   Location? @relation(fields: [locationId], references: [id])
+  locationId String?
 
   @@index([tenantId])
   @@index([providerId, startAt, endAt])
 }
 
 model Appointment {
-  id          String           @id @default(cuid())
-  tenantId    String
-  providerId  String
-  serviceId   String
+  id                 String           @id @default(cuid())
+  tenantId           String
+  providerId         String
+  serviceId          String
+  locationId         String
   serviceName        String
   serviceDurationMin Int
   servicePriceCents  Int
-  startAt     DateTime
-  endAt       DateTime
-  clientName  String
-  clientPhone String
-  status      AppointmentState @default(scheduled)
+  startAt            DateTime
+  endAt              DateTime
+  clientName         String
+  clientPhone        String
+  status             AppointmentState @default(scheduled)
 
   createdById String?
   createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
@@ -156,6 +181,7 @@ model Appointment {
   tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
   service  Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

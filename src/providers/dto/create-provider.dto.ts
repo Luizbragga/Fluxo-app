@@ -15,6 +15,13 @@ export class CreateProviderDto {
   userId!: string;
 
   @ApiProperty({
+    example: 'cuid-da-location',
+    description: 'ID da filial (Location) onde este prestador atende',
+  })
+  @IsString()
+  locationId!: string;
+
+  @ApiProperty({
     enum: Specialty,
     required: false,
     example: Specialty.barber,
