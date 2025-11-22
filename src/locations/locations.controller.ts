@@ -19,6 +19,7 @@ import { UpdateLocationDto } from './dto/update-location.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { Role } from '@prisma/client';
 
 @ApiTags('Locations')
 @ApiBearerAuth()
@@ -29,7 +30,7 @@ export class LocationsController {
 
   // owner / admin / attendant podem listar as locations do tenant
   @Get()
-  @Roles('owner', 'admin', 'attendant')
+  @Roles(Role.owner, Role.admin, Role.attendant)
   findAll(@Req() req: any) {
     const tenantId = req.user?.tenantId as string;
     return this.locationsService.findAll(tenantId);
@@ -37,7 +38,7 @@ export class LocationsController {
 
   // owner / admin podem criar nova filial
   @Post()
-  @Roles('owner', 'admin')
+  @Roles(Role.owner, Role.admin)
   create(@Req() req: any, @Body() dto: CreateLocationDto) {
     const tenantId = req.user?.tenantId as string;
     return this.locationsService.create(tenantId, dto);
@@ -45,7 +46,7 @@ export class LocationsController {
 
   // qualquer perfil autenticado do tenant pode consultar uma location específica
   @Get(':id')
-  @Roles('owner', 'admin', 'attendant', 'provider')
+  @Roles(Role.owner, Role.admin, Role.attendant, Role.provider)
   findOne(@Req() req: any, @Param('id') id: string) {
     const tenantId = req.user?.tenantId as string;
     return this.locationsService.findOne(tenantId, id);
@@ -53,7 +54,7 @@ export class LocationsController {
 
   // owner / admin podem editar uma filial
   @Patch(':id')
-  @Roles('owner', 'admin')
+  @Roles(Role.owner, Role.admin)
   update(
     @Req() req: any,
     @Param('id') id: string,
@@ -65,7 +66,7 @@ export class LocationsController {
 
   // owner / admin podem remover (soft-delete lógico que implementámos no service)
   @Delete(':id')
-  @Roles('owner', 'admin')
+  @Roles(Role.owner, Role.admin)
   remove(@Req() req: any, @Param('id') id: string) {
     const tenantId = req.user?.tenantId as string;
     return this.locationsService.remove(tenantId, id);

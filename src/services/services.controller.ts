@@ -13,7 +13,8 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { Roles } from '../common/decorators/roles.decorator';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '@prisma/client';
 
 import { ServicesService } from './services.service';
@@ -22,7 +23,7 @@ import { UpdateServiceDto } from './dto/update-service.dto';
 
 @ApiTags('Services')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard) // RolesGuard já está global
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('services')
 export class ServicesController {
   constructor(private readonly services: ServicesService) {}

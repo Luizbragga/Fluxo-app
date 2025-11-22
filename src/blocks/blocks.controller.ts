@@ -17,7 +17,7 @@ import { CreateBlockDto } from './dto/create-block.dto';
 import { UpdateBlockDto } from './dto/update-block.dto';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { Roles } from '../common/decorators/roles.decorator';
+import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '@prisma/client';
 
 @ApiTags('Blocks')
@@ -27,7 +27,6 @@ import { Role } from '@prisma/client';
 export class BlocksController {
   constructor(private readonly blocksService: BlocksService) {}
 
-  // owner | admin | provider podem criar bloqueios
   @Roles(Role.owner, Role.admin, Role.provider)
   @Post()
   create(@Req() req: any, @Body() dto: CreateBlockDto) {
@@ -39,7 +38,6 @@ export class BlocksController {
     return this.blocksService.create(tenantId, user, dto);
   }
 
-  // owner | admin | attendant | provider podem atualizar bloqueios
   @Roles(Role.owner, Role.admin, Role.attendant, Role.provider)
   @Patch(':id')
   update(
@@ -51,7 +49,6 @@ export class BlocksController {
     return this.blocksService.update(tenantId, id, dto);
   }
 
-  // owner | admin removem bloqueios
   @Roles(Role.owner, Role.admin)
   @Delete(':id')
   remove(@Req() req: any, @Param('id') id: string) {
@@ -59,7 +56,6 @@ export class BlocksController {
     return this.blocksService.remove(tenantId, id);
   }
 
-  // owner | admin | provider listam bloqueios (por provider + date)
   @Roles(Role.owner, Role.admin, Role.provider)
   @Get()
   list(

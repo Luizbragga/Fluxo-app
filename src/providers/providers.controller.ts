@@ -18,12 +18,13 @@ import { CreateProviderDto } from './dto/create-provider.dto';
 import { UpdateProviderDto } from './dto/update-provider.dto';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { Roles } from '../common/decorators/roles.decorator';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '@prisma/client';
 
 @ApiTags('Providers')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard) // RolesGuard global, guard de auth aqui
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('providers')
 export class ProvidersController {
   constructor(private readonly providersService: ProvidersService) {}
@@ -105,7 +106,6 @@ export class ProvidersController {
       throw new BadRequestException('Param "date" deve ser YYYY-MM-DD');
     }
 
-    // validação básica de cuid (opcional, mas evita lixo)
     if (!/^c[a-z0-9]{24}$/i.test(serviceId)) {
       throw new BadRequestException(
         'Param "serviceId" deve ser um cuid válido',
