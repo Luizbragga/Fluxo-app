@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
-
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from './prisma/prisma.module';
 import { HealthModule } from './health/health.module';
@@ -11,7 +10,7 @@ import { ProvidersModule } from './providers/providers.module';
 import { BlocksModule } from './blocks/blocks.module';
 import { AppointmentsModule } from './appointments/appointments.module';
 import { RolesGuard } from './common/guards/roles.guard';
-
+import { LocationsModule } from './locations/locations.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -23,6 +22,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     ProvidersModule,
     BlocksModule,
     AppointmentsModule,
+    LocationsModule,
   ],
   providers: [
     {

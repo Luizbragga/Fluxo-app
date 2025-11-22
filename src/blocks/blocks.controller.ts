@@ -11,32 +11,36 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+
 import { BlocksService } from './blocks.service';
 import { CreateBlockDto } from './dto/create-block.dto';
 import { UpdateBlockDto } from './dto/update-block.dto';
+
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { RolesGuard } from '../auth/guards/roles.guard';
-import { Roles } from '../auth/decorators/roles.decorator';
+import { Roles } from '../common/decorators/roles.decorator';
+import { Role } from '@prisma/client';
 
 @ApiTags('Blocks')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Controller({ path: 'blocks' })
+@UseGuards(JwtAuthGuard)
+@Controller('blocks')
 export class BlocksController {
   constructor(private readonly blocksService: BlocksService) {}
 
-  // owner | admin | provider
+  // owner | admin | provider podem criar bloqueios
+  @Roles(Role.owner, Role.admin, Role.provider)
   @Post()
-  @Roles('owner', 'admin', 'provider')
   create(@Req() req: any, @Body() dto: CreateBlockDto) {
     const tenantId = req.user?.tenantId as string;
     const user = {
-      id: req.user?.sub as string,
-      role: req.user?.role as string,
+      id: req.user?.id as string,
+      role: req.user?.role as Role,
     };
     return this.blocksService.create(tenantId, user, dto);
   }
-  @Roles('owner', 'admin', 'attendant', 'provider')
+
+  // owner | admin | attendant | provider podem atualizar bloqueios
+  @Roles(Role.owner, Role.admin, Role.attendant, Role.provider)
   @Patch(':id')
   update(
     @Req() req: any,
@@ -47,17 +51,17 @@ export class BlocksController {
     return this.blocksService.update(tenantId, id, dto);
   }
 
-  // owner | admin
+  // owner | admin removem bloqueios
+  @Roles(Role.owner, Role.admin)
   @Delete(':id')
-  @Roles('owner', 'admin')
   remove(@Req() req: any, @Param('id') id: string) {
     const tenantId = req.user?.tenantId as string;
     return this.blocksService.remove(tenantId, id);
   }
 
-  // opcional: listar por dia
+  // owner | admin | provider listam bloqueios (por provider + date)
+  @Roles(Role.owner, Role.admin, Role.provider)
   @Get()
-  @Roles('owner', 'admin', 'provider')
   list(
     @Req() req: any,
     @Query('providerId') providerId: string,
